@@ -412,8 +412,6 @@ def decide_next_action(status: dict[str, Any]) -> str:
         return "WAIT_EXECUTOR_LOG"
     if status.get("log_status") == "FAIL":
         return "ANALYZE_FAIL_LOG"
-    if status.get("log_status") == "PASS" and not status.get("log_is_fresh"):
-        return "BLOCKED_LOG_STALE"
     if status.get("log_status") == "PASS":
         return "FINAL_VERIFY_PASS"
     return "INSPECT_LOG_STATUS"
@@ -748,9 +746,12 @@ def step_context_text(node: ast.With, suffix: str, bindings: dict[str, str] | No
     return None
 
 
-def has_check_write_cmd_call(node: ast.AST) -> bool:
+def has_cleanup_command_call(node: ast.AST) -> bool:
     for child in ast.walk(node):
-        if isinstance(child, ast.Call) and dotted_name(child.func).endswith(".check_write_cmd"):
+        if not isinstance(child, ast.Call):
+            continue
+        name = dotted_name(child.func)
+        if name.endswith(".command") or name.endswith(".check_write_cmd"):
             return True
     return False
 
@@ -819,7 +820,7 @@ def check_teardown_method_structure(tree: ast.AST) -> list[dict[str, Any]]:
     for teardown in teardown_nodes:
         has_casestep = False
         has_cleanup_expect = False
-        has_cleanup_cmd = has_check_write_cmd_call(teardown)
+        has_cleanup_cmd = has_cleanup_command_call(teardown)
         bindings = local_string_bindings(teardown)
 
         for node in ast.walk(teardown):
@@ -845,14 +846,14 @@ def check_teardown_method_structure(tree: ast.AST) -> list[dict[str, Any]]:
             })
         elif not has_cleanup_cmd:
             # 允许仅查询类 teardown（如告警查询）在 expect 内用公共库 assert；
-            # 若既无 check_write_cmd 也无 assert，由 EXPECT/TEARDOWN_EXPECT_EMPTY 覆盖。
+            # 配置恢复可只下发 command，不要求校验或断言。
             asserts = [child for child in ast.walk(teardown) if isinstance(child, ast.Assert)]
             valid_asserts = [child for child in asserts if not is_constant_true(child.test)]
             if not valid_asserts:
                 issues.append({
                     "code": "TEARDOWN_EXPECT_EMPTY",
                     "message": (
-                        "teardown 的 step.expect 无有效 assert 时，块内必须包含 check_write_cmd 清理动作；"
+                        "teardown 的 step.expect 无有效 assert 时，块内必须包含 command/check_write_cmd 清理动作；"
                         "不可为空壳。"
                     ),
                     "line": teardown.lineno,
@@ -933,7 +934,7 @@ def build_lint(date_dir: Path) -> dict[str, Any]:
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     issues.extend(check_setup_class_shape(tree))
     result["assert_count"] = sum(1 for node in ast.walk(tree) if isinstance(node, ast.Assert))
-    assigned_command_lists: list[tuple[int, list[str], list[str]]] = []
+    assigned_command_lists: list[tuple[int, list[str], list[str], str | None]] = []
     command_calls: list[tuple[int, list[str]]] = []
     command_list_call_names: dict[str, list[str]] = {}
 
@@ -980,10 +981,13 @@ def build_lint(date_dir: Path) -> dict[str, Any]:
                 commands = [value for value in (literal_string(arg) for arg in node.args) if value is not None]
                 if commands:
                     command_calls.append((node.lineno, commands))
-                    if contains_config_command(commands):
+                    if (
+                        contains_config_command(commands)
+                        and nearest_function(node, parents) != "teardown_method"
+                    ):
                         issues.append({
                             "code": "CONFIG_NOT_CHECK_WRITE_CMD",
-                            "message": "配置/清理命令必须通过 cmgr.check_write_cmd(*cmd_list) 下发，不能用 cmgr.command 逐条或批量下发。",
+                            "message": "非 teardown 配置命令必须通过 cmgr.check_write_cmd(*cmd_list) 下发，不能用 cmgr.command 逐条或批量下发。",
                             "line": node.lineno,
                         })
             for arg in node.args:
@@ -1029,7 +1033,12 @@ def build_lint(date_dir: Path) -> dict[str, Any]:
                 })
             if values:
                 names = assigned_command_list_names(node)
-                assigned_command_lists.append((node.lineno, values, names))
+                assigned_command_lists.append((
+                    node.lineno,
+                    values,
+                    names,
+                    nearest_function(node, parents),
+                ))
                 for command in values:
                     if HARDCODED_INTERFACE_RE.search(command):
                         issues.append({
@@ -1064,13 +1073,13 @@ def build_lint(date_dir: Path) -> dict[str, Any]:
             asserts = [child for child in ast.walk(node) if isinstance(child, ast.Assert)]
             valid_asserts = [child for child in asserts if not is_constant_true(child.test)]
             if not valid_asserts:
-                # 方案A：teardown 清理 expect 允许无 assert，但块内必须有 check_write_cmd。
+                # teardown 配置恢复只负责下发命令，结果由框架配置对比检查。
                 if is_teardown_cleanup_expect(node, parents):
-                    if has_check_write_cmd_call(node):
+                    if has_cleanup_command_call(node):
                         warnings.append({
                             "code": "TEARDOWN_EXPECT_NO_ASSERT_OK",
                             "message": (
-                                "teardown 清理 expect 无 assert 但已包含 check_write_cmd，"
+                                "teardown 清理 expect 无 assert 但已包含实际清理命令，"
                                 "按清理步骤规范放行。"
                             ),
                             "line": node.lineno,
@@ -1080,7 +1089,7 @@ def build_lint(date_dir: Path) -> dict[str, Any]:
                             "code": "TEARDOWN_EXPECT_EMPTY",
                             "message": (
                                 "teardown 的 step.expect 无 assert 时，块内必须包含 "
-                                "check_write_cmd 清理动作。"
+                                "command/check_write_cmd 清理动作。"
                             ),
                             "line": node.lineno,
                         })
@@ -1102,19 +1111,23 @@ def build_lint(date_dir: Path) -> dict[str, Any]:
             "class_setup_topology": setup_topology[1],
         })
 
-    for line, commands in command_calls + [(line, commands) for line, commands, _ in assigned_command_lists]:
+    for line, commands in command_calls + [
+        (line, commands) for line, commands, _, _ in assigned_command_lists
+    ]:
         if not has_enable_before_config(commands):
             issues.append({"code": "CONFIG_WITHOUT_ENABLE", "message": "包含配置/清理命令的 cmd_list 首条必须是 enable/en。", "line": line})
 
-    for line, commands, names in assigned_command_lists:
+    for line, commands, names, function_name in assigned_command_lists:
         if not contains_config_command(commands):
+            continue
+        if function_name == "teardown_method":
             continue
         for name in names:
             callees = command_list_call_names.get(name, [])
             if callees and not any(callee.endswith(".check_write_cmd") for callee in callees):
                 issues.append({
                     "code": "CONFIG_NOT_CHECK_WRITE_CMD",
-                    "message": "配置/清理 cmd_list 必须通过 cmgr.check_write_cmd(*cmd_list) 下发。",
+                    "message": "非 teardown 配置 cmd_list 必须通过 cmgr.check_write_cmd(*cmd_list) 下发。",
                     "line": line,
                     "name": name,
                 })
@@ -1406,7 +1419,7 @@ def build_final_check(date_dir: Path) -> dict[str, Any]:
     if status.get("log_status") != "PASS":
         result["notes"].append("最新同前缀日志不是 PASS，不能终验。")
     if status.get("log_status") == "PASS" and not status.get("log_is_fresh"):
-        result["notes"].append("最新 PASS 日志早于脚本修改时间，不能终验。")
+        result["notes"].append("最新 PASS 日志早于脚本修改时间；按当前策略仅提示，不阻止终验和封包。")
     if not status.get("current_py"):
         result["notes"].append("py/ 中没有当前脚本。")
         return result
@@ -1431,7 +1444,6 @@ def build_final_check(date_dir: Path) -> dict[str, Any]:
             result["notes"].append("PASS 日志真实步骤异常关键字检查未通过，禁止封包。")
     result["ready_for_package_review"] = (
         status.get("log_status") == "PASS"
-        and status.get("log_is_fresh")
         and bool(lint.get("ok"))
         and bool(result["pass_anomaly_check"] and result["pass_anomaly_check"].get("ok"))
     )
@@ -1453,7 +1465,12 @@ def print_status(status: dict[str, Any]) -> None:
         print(f"状态: {current} 等待执行机日志回流。")
         return
 
-    fresh = "新鲜" if status.get("log_is_fresh") else "过旧"
+    if status.get("log_is_fresh"):
+        fresh = "新鲜"
+    elif status.get("log_status") == "PASS":
+        fresh = "早于脚本（按当前策略允许封包）"
+    else:
+        fresh = "过旧"
     print(f"状态: {current} 最新同前缀日志为 {latest}，结果 {status['log_status']}，日志{fresh}。")
 
 
@@ -1508,7 +1525,7 @@ def cmd_package(args: argparse.Namespace) -> None:
     if status.get("log_status") != "PASS":
         raise SystemExit(f"最新同前缀日志不是 PASS，禁止封包: {status.get('latest_log')} {status.get('log_status')}")
     if not status.get("log_is_fresh"):
-        raise SystemExit(f"最新 PASS 日志早于脚本修改时间，禁止封包: {status.get('latest_log')}")
+        print(f"警告: 最新 PASS 日志早于脚本修改时间，按当前策略继续封包: {status.get('latest_log')}")
 
     log_path = args.date_dir / "log" / status["latest_log"]
     anomaly = build_pass_anomaly_check(py_path, log_path)

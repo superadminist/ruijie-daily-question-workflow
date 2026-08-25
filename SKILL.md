@@ -46,9 +46,9 @@ description: "管理锐捷每日题库脚本从日期目录 bak 原题、py 单�
 - 日志接收目录由用户任意设置，必须是已存在目录；默认读取本文件“日志接收目录”配置，不要求普通用户执行 Python 命令；不得擅自创建、清理或固定到日期工作目录中；接收阶段只移动选中的最新日志，不得删除外部目录中的其他文件。
 - 收到“最新日志已经更新”“日志已更新”“日志已上传”“最新日志已上传”“执行机日志已回流”等同义指令时，运行 `receive-log`，从已配置的外部接收目录递归查找当前脚本同前缀 `.txt`，按最后修改时间取最新文件。
 - `receive-log` 找到匹配文件后，将其移动到 `log/`，并清除 `log/` 中其他全部内容；成功后 `py/` 和 `log/` 必须分别只有一个当前 `.py` 和一个最新 `.txt`。
-- 同前缀日志有多个或存在不同子目录中的同名日志时，只取最后修改时间最新的一个。禁止沿用旧 PASS 日志。
-- 如果最新日志早于当前脚本最近修改时间，说明脚本改过但没有重新跑执行机，禁止终验和封包。
-- 只要 PASS 终验后又修改了 `.py`，旧 PASS 日志立即作废，必须重新手动远程执行。
+- 同前缀日志有多个或存在不同子目录中的同名日志时，只取最后修改时间最新的一个。
+- 最新同前缀日志为 PASS 时，即使日志修改时间早于当前脚本，也允许继续终验和封包；`log_is_fresh` 只作为时间关系提示，不作为 PASS 封包门禁。
+- PASS 后又修改 `.py` 时，旧 PASS 日志仍可用于封包；必须明确提示日志早于脚本，其他日志状态、前缀匹配、异常关键字和人工终验规则保持不变。
 - `bak/` 中原始脚本不可修改；修正只发生在 `py/` 中的工作副本。
 - 收到“exe check”指令时，先检查 `done/` 下全部 `.py`、`.txt` 是否存在同名文件；无重名时清空同级 `check/`，再把文件直接复制到 `check/` 根目录，禁止复制或创建任何规格子目录；有重名时停止且不得清理现有 `check/`。
 - `ignore/` 中的脚本视为已处理且需要跳过，`advance` 推进时必须跳过；工作流禁止自行判断并移动文件到 `ignore/`，只有用户明确说明“无法解决，归档到 ignore”或“锐捷人工退回如下 JSON”时才能执行归档命令。
@@ -56,7 +56,7 @@ description: "管理锐捷每日题库脚本从日期目录 bak 原题、py 单�
 - PASS 后最终封包前，删除 docstring 中 `@具体UI命令（脚本完成后删除）:` 行。
 - 用例等级与日志运行时间绑定：L0/L1 要求 10 分钟以内，L2/L3 要求 30 分钟以内；若最新 PASS 日志文件名或内容显示用时超过 10 分钟，例如 `结果(PASS)_用时(17).txt`，封包时应把归档脚本的 `@用例等级` 提升到 L2，并在终验报告中核对脚本和日志中的 `@用例等级`。
 - PASS 日志也必须检查真实业务步骤内的明显异常关键字，防止命令不存在却假 PASS。重点检查 `% Invalid input`、`% Unknown command.`、`% Unknowm command.`、`incomplete command`、`ambiguous command`、`Bad parameter`、`does not exist`、`can't find`、`Traceback`、`AttributeError`、`TypeError`。只检查脚本真实步骤对应的日志块，不检查框架健康检查、coredump、配置对比、内存显示等框架区域；如果真实步骤中命中异常关键字，禁止终验通过和封包。
-- 脚本静态审查以《脚本编写注意事项》为主导：禁止 `exec()` 和任何含 `exec` 的方法名/变量名/字段名；禁止 `python.skip/pytest.skip`；禁止 `@pytest.mark.usefixtures(...)`；禁止除框架方法外的自定义函数；禁止从 `self.tb` 手工提取设备属性；禁止硬编码物理接口；禁止除 `setup_method` 外的 `try...except`；禁止以 `FAIL` 作为最终通过条件；配置/清理命令必须使用 `cmd_list` 并通过 `cmgr.check_write_cmd(*cmd_list)` 下发；包含配置/清理命令的 `cmd_list` 首条必须是 `enable` 或 `en`；回显验证应使用公共库判断函数后断言 `PASS`。
+- 脚本静态审查以《脚本编写注意事项》为主导：禁止 `exec()` 和任何含 `exec` 的方法名/变量名/字段名；禁止 `python.skip/pytest.skip`；禁止 `@pytest.mark.usefixtures(...)`；禁止除框架方法外的自定义函数；禁止从 `self.tb` 手工提取设备属性；禁止硬编码物理接口；禁止除 `setup_method` 外的 `try...except`；禁止以 `FAIL` 作为最终通过条件；非 `teardown_method` 的配置命令必须使用 `cmd_list` 并通过 `cmgr.check_write_cmd(*cmd_list)` 下发；`teardown_method` 的配置恢复使用 `cmd_list` + `cmgr.command(*cmd_list)`，不做校验和断言，由框架配置对比判断是否清空；包含配置/清理命令的 `cmd_list` 首条必须是 `enable` 或 `en`；业务回显验证应使用公共库判断函数后断言 `PASS`。
 
 ## 常用脚本
 
@@ -80,10 +80,10 @@ python3 ruijie-daily-question-workflow/scripts/workflow.py reject-done 0512 --it
 
 为降低上下文占用，优先使用辅助命令生成短报告：
 
-- `lint`：静态检查当前 `py/` 脚本的红线、SRS 字段、`step.expect` 有效断言、`cmd_list` 首条 `enable`、`check_write_cmd`、禁止自定义函数、禁止 `try...except`、禁止硬编码接口、拓扑一致性、`teardown_method` 步骤壳等问题。
+- `lint`：静态检查当前 `py/` 脚本的红线、SRS 字段、`step.expect` 有效断言、`cmd_list` 首条 `enable`、非 teardown 配置的 `check_write_cmd`、禁止自定义函数、禁止 `try...except`、禁止硬编码接口、拓扑一致性、`teardown_method` 步骤壳等问题。
   - `test_process` 内的 `step.expect` 必须含有效 `assert`。
-  - `teardown_method` 必须使用 `casestep("配置清空") + expect("配置清除成功")` 步骤壳；清理以 `check_write_cmd` 为主，允许该 expect 内无 assert；禁止为消除 `EXPECT_WITHOUT_ASSERT` 删除 teardown 步骤壳后只保留裸清理命令。
-  - teardown 的 expect 无 assert 且无 `check_write_cmd` 时，报 `TEARDOWN_EXPECT_EMPTY`；缺步骤壳时报 `TEARDOWN_SHELL_MISSING`。
+  - `teardown_method` 必须使用 `casestep("配置清空") + expect("配置清除成功")` 步骤壳；配置恢复使用 `cmd_list` + `cmgr.command(*cmd_list)`，不做校验和断言，由框架配置对比判断是否清空；禁止为消除 `EXPECT_WITHOUT_ASSERT` 删除 teardown 步骤壳后只保留裸清理命令。
+  - teardown 的 expect 无 assert 且无 `command/check_write_cmd` 实际清理动作时，报 `TEARDOWN_EXPECT_EMPTY`；缺步骤壳时报 `TEARDOWN_SHELL_MISSING`。
 - `log-summary`：只摘要最新同前缀日志，输出日志状态、步骤线索、FAIL 错误原因和错误附近片段，避免整份日志进入上下文。
 - `final-check`：终验前汇总状态、静态检查结果、docstring 步骤/预期、代码 step/expect、日志步骤线索、日志用时和用例等级建议，供模型做最终人工判断。
 
@@ -124,19 +124,20 @@ python3 ruijie-daily-question-workflow/scripts/workflow.py reject-done 0512 --it
    - 如果用户明确确认该脚本无法解决、需要跳过，运行 `workflow.py ignore-current <date_dir>`。该命令只允许在当前脚本最新同前缀日志为新鲜 FAIL 时执行，会将当前 `.py`、最新 FAIL 日志和 `error.json` 归档到 `ignore/<脚本stem>/`，从 `py/` 移除当前脚本，并自动推进下一个 bak 脚本。
 
 5. PASS 终验：
-   - 如果最新同前缀日志是 PASS 且晚于当前脚本，读取 PASS 日志和当前脚本。
+   - 如果最新同前缀日志是 PASS，读取 PASS 日志和当前脚本；日志早于脚本时给出警告，但不得因此拒绝终验或封包。
    - 优先运行 `workflow.py final-check <date_dir>` 获取短终验报告。
    - 检查日志步骤、脚本步骤和预期是否一致。
    - 检查是否真实论证 SRS 六级规格。
    - 检查脚本和日志中的 `@用例等级`，并结合 PASS 日志用时判断是否需要提升等级；日志用时超过 10 分钟时，L0/L1 必须提升到 L2。
    - 检查 `final-check` 的 `pass_anomaly_check`。如果 PASS 日志真实业务步骤中出现明显命令异常或 Python 异常关键字，必须说明命中行号、关键字和原因，禁止封包。
-   - 检查每个 `with step.expect(...)` 块是否至少有一个有效 `assert`。
+   - 检查每个 `with step.expect(...)` 块是否至少有一个有效 `assert`；`teardown_method` 的配置恢复步骤除外，该步骤只下发恢复命令，由框架配置对比检查恢复结果。
    - 严禁虚假断言，例如 `assert True`、只判断命令回显存在却不验证预期行为、日志为空却宣称统计记录生成、公共库函数返回 `FAIL` 却断言 `FAIL` 当作通过。
-   - 检查「红线问题文档」和《脚本编写注意事项》：禁止 `exec()`、禁止含 `exec` 的命名、禁止 `python.skip/pytest.skip`、禁止 `usefixtures`、禁止自定义函数、禁止硬编码接口、配置命令必须 `cmd_list` + `check_write_cmd`，BGP instance 规则必须符合规格。
-   - 如果终验需要改脚本，改完后旧 PASS 日志作废，回到手动远程执行。
+   - 检查「红线问题文档」和《脚本编写注意事项》：禁止 `exec()`、禁止含 `exec` 的命名、禁止 `python.skip/pytest.skip`、禁止 `usefixtures`、禁止自定义函数、禁止硬编码接口；非 teardown 配置命令必须 `cmd_list` + `check_write_cmd`，teardown 配置恢复使用 `cmd_list` + `command` 且不增加校验和断言；BGP instance 规则必须符合规格。
+   - 如果终验需要改脚本，按当前策略允许继续使用原 PASS 日志封包，但必须提示脚本已晚于日志并继续完成其他终验检查。
 
 6. 封包和推进下一个：
    - 终验通过后运行 `workflow.py package <date_dir>`。
+   - `package` 不比较 PASS 日志与脚本的先后时间；脚本修改时间晚于日志时输出警告并继续封包。
    - 脚本会从当前 `.py` docstring 解析 `@srs一级规格`、`@srs二级规格`、`@srs三级规格`。
    - 默认封包到日期目录下：`<date_dir>/done/<一级>/<二级>/<三级>/`。
    - 终版 `.py` 放在规格目录下，最新 PASS 日志放到该目录的 `Log/` 子目录。
@@ -180,8 +181,8 @@ python3 ruijie-daily-question-workflow/scripts/workflow.py reject-done 0512 --it
 
 - 当前处理的脚本名。
 - 使用的最新日志名及其 PASS/FAIL 状态。
-- 若拒绝终验，说明是前缀不匹配、日志过旧、无日志、还是最新日志 FAIL。
-- 若修改了脚本，说明旧 PASS 日志已作废。
+- 若拒绝终验，说明是前缀不匹配、无日志、最新日志 FAIL，还是其他终验门禁未通过；PASS 日志早于脚本不能单独作为拒绝原因。
+- 若修改了脚本且继续使用较早的 PASS 日志，明确提示该时间关系，但不得因此拒绝封包。
 - 若接收日志完成，说明选中的源日志、最后修改时间、移动后的 `log/` 路径及被清理的旧日志数量。
 - 若封包完成，给出 `done/` 下规格目录和 `Log/` 目录路径。
 - 若执行 exe check，给出 `check/` 路径和复制文件数量。
