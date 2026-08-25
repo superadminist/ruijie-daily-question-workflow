@@ -9,7 +9,7 @@ description: "管理锐捷每日题库脚本从日期目录 bak 原题、py 单�
 
 - **脚本生成器技能**: `../.trae/skills/ruijie-test-script-generator/SKILL.md`
 - **红线问题文档**: `../zsk/红线问题.md`
-- **日志接收目录**: `D:\phpstudy_pro\WWW\for_peace\otherlog`
+- **日志接收目录**: `D:\MyCode\RJ-pytest\otherlog`
 
 普通用户只需设置上面的“日志接收目录”，无需执行 Python 配置命令。用户在对话中提供目录时，先确认该目录存在，再仅修改这一行；保存绝对路径，例如 `D:\RuijieWorkSpace\Logs`。
 
