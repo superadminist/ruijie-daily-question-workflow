@@ -1,6 +1,6 @@
 ---
 name: "ruijie-daily-question-workflow"
-description: "管理锐捷每日题库脚本从日期目录 bak 原题、py 单文件修复、用户自定义外部目录日志接收、log 单文件回流、FAIL 迭代、PASS 终验、规格目录封包归档到 exe check 文件汇集的完整闭环。适用于用户提到最新日志已经更新、日志已上传、执行机日志已回流、设置日志接收目录、同前缀最新日志、PASS/FAIL 回流、终验、封包、exe check 或处理下一个 py 文件。"
+description: "管理锐捷每日题库脚本从日期目录 bak 原题、py 单文件修复、用户自定义外部目录日志接收、log 单文件回流、FAIL 迭代、PASS 终验、规格目录封包归档、exe check 文件汇集和 ignore 失败报表导出的完整闭环。适用于用户提到最新日志已经更新、日志已上传、执行机日志已回流、设置日志接收目录、同前缀最新日志、PASS/FAIL 回流、终验、封包、exe check、生成ignore表、生成ignore、ignore报表、导出ignore 或处理下一个 py 文件。"
 ---
 
 # Ruijie Daily Question Workflow
@@ -46,6 +46,7 @@ description: "管理锐捷每日题库脚本从日期目录 bak 原题、py 单�
 - 日志接收目录由用户任意设置，必须是已存在目录；默认读取本文件“日志接收目录”配置，不要求普通用户执行 Python 命令；不得擅自创建、清理或固定到日期工作目录中；接收阶段只移动选中的最新日志，不得删除外部目录中的其他文件。
 - 收到“最新日志已经更新”“日志已更新”“日志已上传”“最新日志已上传”“执行机日志已回流”等同义指令时，运行 `receive-log`，从已配置的外部接收目录递归查找当前脚本同前缀 `.txt`，按最后修改时间取最新文件。
 - `receive-log` 找到匹配文件后，将其移动到 `log/`，并清除 `log/` 中其他全部内容；成功后 `py/` 和 `log/` 必须分别只有一个当前 `.py` 和一个最新 `.txt`。
+- 修改或修复 `py/` 中当前脚本后，禁止删除、移动或清空 `log/` 中现有日志；旧日志应保留用于问题追溯。只有成功执行 `receive-log` 接收到同前缀新日志时，才允许用新日志替换旧日志。
 - 同前缀日志有多个或存在不同子目录中的同名日志时，只取最后修改时间最新的一个。
 - 最新同前缀日志为 PASS 时，即使日志修改时间早于当前脚本，也允许继续终验和封包；`log_is_fresh` 只作为时间关系提示，不作为 PASS 封包门禁。
 - PASS 后又修改 `.py` 时，旧 PASS 日志仍可用于封包；必须明确提示日志早于脚本，其他日志状态、前缀匹配、异常关键字和人工终验规则保持不变。
@@ -53,6 +54,9 @@ description: "管理锐捷每日题库脚本从日期目录 bak 原题、py 单�
 - 收到“exe check”指令时，先检查 `done/` 下全部 `.py`、`.txt` 是否存在同名文件；无重名时清空同级 `check/`，再把文件直接复制到 `check/` 根目录，禁止复制或创建任何规格子目录；有重名时停止且不得清理现有 `check/`。
 - `ignore/` 中的脚本视为已处理且需要跳过，`advance` 推进时必须跳过；工作流禁止自行判断并移动文件到 `ignore/`，只有用户明确说明“无法解决，归档到 ignore”或“锐捷人工退回如下 JSON”时才能执行归档命令。
 - `ignore/<脚本stem>/error.json` 必须使用结构：`{"pyName": "脚本名.py", "failReason": "原因"}`。执行机 FAIL 无法解决时，`failReason` 可先留空供用户手动填写；锐捷人工退回时，必须写入用户提供的原因。
+- 收到“生成ignore表”“生成ignore”“ignore报表”“导出ignore”任一明确指令时，生成当前工作目录的 Ignore Excel；不得把“工作结束”等普通表达自动视为生成指令。
+- Ignore Excel 数据只读取 `ignore/<脚本stem>/error.json`，并校验同目录存在唯一且与 `pyName` 一致的 `.py`。`failReason` 包含“回收”的记录进入“回收”，其余进入“卡点”；全部为卡点时只生成“卡点”，全部为回收时只生成“回收”，两类都有时按“卡点”“回收”顺序生成两个 Sheet。
+- Ignore Excel 保存为 `<date_dir>/<日期目录名>_失败_<总数量>.xlsx`，例如 `0821/0821_失败_2.xlsx`。同名文件仅在新文件生成并验证成功后替换，不删除其他数量的历史报表，也不修改、移动或删除 `ignore/` 中任何内容。
 - PASS 后最终封包前，删除 docstring 中 `@具体UI命令（脚本完成后删除）:` 行。
 - 用例等级与日志运行时间绑定：L0/L1 要求 10 分钟以内，L2/L3 要求 30 分钟以内；若最新 PASS 日志文件名或内容显示用时超过 10 分钟，例如 `结果(PASS)_用时(17).txt`，封包时应把归档脚本的 `@用例等级` 提升到 L2，并在终验报告中核对脚本和日志中的 `@用例等级`。
 - PASS 日志也必须检查真实业务步骤内的明显异常关键字，防止命令不存在却假 PASS。重点检查 `% Invalid input`、`% Unknown command.`、`% Unknowm command.`、`incomplete command`、`ambiguous command`、`Bad parameter`、`does not exist`、`can't find`、`Traceback`、`AttributeError`、`TypeError`。只检查脚本真实步骤对应的日志块，不检查框架健康检查、coredump、配置对比、内存显示等框架区域；如果真实步骤中命中异常关键字，禁止终验通过和封包。
@@ -121,6 +125,7 @@ python3 ruijie-daily-question-workflow/scripts/workflow.py reject-done 0512 --it
    - 优先运行 `workflow.py log-summary <date_dir>`，只读取 FAIL 关键片段；只有摘要不足以定位时才打开完整日志。
    - 如果最新日志是 FAIL，必须告诉用户错误原因；优先使用 `log-summary` 的 `error_reason` 和 `error_excerpt`，再结合当前脚本调用「脚本生成器技能」分析失败原因并修正脚本。
    - 修正后检查后续步骤是否可能继续失败，并回到手动远程执行。
+   - FAIL 修复完成后保留当前 FAIL 日志，运行 lint 和 py_compile 后提示用户重新执行；不得主动删除旧 FAIL 日志。收到用户“最新日志已经更新”等通知后，才运行 `receive-log` 替换旧日志。
    - 如果用户明确确认该脚本无法解决、需要跳过，运行 `workflow.py ignore-current <date_dir>`。该命令只允许在当前脚本最新同前缀日志为新鲜 FAIL 时执行，会将当前 `.py`、最新 FAIL 日志和 `error.json` 归档到 `ignore/<脚本stem>/`，从 `py/` 移除当前脚本，并自动推进下一个 bak 脚本。
 
 5. PASS 终验：
@@ -175,6 +180,15 @@ python3 ruijie-daily-question-workflow/scripts/workflow.py reject-done 0512 --it
    - 重名检查通过后，先完整复制到临时目录；复制成功后才清空原 `check/` 并写入扁平文件，防止读取源文件失败时先丢失旧检查文件。
    - 命令输出源目录、目标目录、复制数量、清理的旧内容和每个文件的源/目标路径。
 
+9. Ignore Excel：
+   - 用户明确输入“生成ignore表”“生成ignore”“ignore报表”或“导出ignore”时执行；普通用户无需输入 Python 或 Node 命令。
+   - 若 `ignore/` 不存在或没有用例目录，不生成 Excel，明确回复当前没有可导出的 ignore 记录。
+   - 读取每个 `ignore/<脚本stem>/error.json` 的 `pyName` 和 `failReason`，校验 JSON、脚本文件和重复名称。任一记录无效时停止，保留已有报表并列出全部问题目录。
+   - 使用 `scripts/ignore_report.mjs` 和 Codex 内置 spreadsheet artifact 运行时生成 Excel；执行前通过 `load_workspace_dependencies` 获取 Node 和 `node_modules`，在会话临时目录创建 `node_modules` 连接，并把该临时连接路径传给脚本。禁止安装依赖或使用 `openpyxl`、`xlsxwriter`、`pandas.ExcelWriter`。
+   - Excel 固定两列：`py脚本名称`、`失败原因`。按脚本名排序，文本按纯文本写入，首行冻结并启用筛选，长失败原因自动换行。
+   - `failReason` 含“回收”时归入“回收”，否则归入“卡点”。仅创建有数据的 Sheet；混合数据的 Sheet 顺序固定为“卡点”“回收”。空失败原因归入“卡点”，保留空值并在结果中警告数量，不得编造原因。
+   - 输出路径为 `<date_dir>/<日期目录名>_失败_<卡点数+回收数>.xlsx`。生成过程中在临时目录渲染并检查全部 Sheet，成功后才替换同名报表；不得删除其他 `_失败_*.xlsx`。
+
 ## 输出要求
 
 每次处理都要明确告诉用户当前状态：
@@ -186,3 +200,4 @@ python3 ruijie-daily-question-workflow/scripts/workflow.py reject-done 0512 --it
 - 若接收日志完成，说明选中的源日志、最后修改时间、移动后的 `log/` 路径及被清理的旧日志数量。
 - 若封包完成，给出 `done/` 下规格目录和 `Log/` 目录路径。
 - 若执行 exe check，给出 `check/` 路径和复制文件数量。
+- 若生成 Ignore Excel，给出文件路径、总数量、卡点数量、回收数量、空失败原因数量和实际生成的 Sheet 名称。
